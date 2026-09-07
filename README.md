@@ -1,548 +1,123 @@
 # V.A.K.Y.A
 
-> **Voice Activated Knowledge Yantric Agent**
-> *Built by Sai Sandeep — Windows RTX 3050 · Groq + Faster-Whisper + Piper TTS*
-
----
-
-## Current Build Status — Week 5 (Complete)
-
-| Module | Status | Details |
-|--------|--------|---------|
-| 🎤 Wake Word Detection | ✅ Complete | OpenWakeWord — Alexa model (placeholder) |
-| 🗣️ Speech-to-Text | ✅ Complete | Faster-Whisper Small, CUDA (RTX 3050) |
-| 🔊 Text-to-Speech | ✅ Complete | Piper TTS — Ryan US voice |
-| 🎙️ Mic Device Fix | ✅ Complete | Realtek Array, index 2 |
-| 🧠 Brain / LLM | ✅ Complete | Groq — Llama 3.1 8B instant |
-| 🔁 Main Loop | ✅ Complete | Hear → Think → Speak |
-| 💾 Memory | ✅ Complete | ChromaDB (semantic) + SQLite (structured) |
-| 🎵 YouTube MCP Server | ✅ Complete | Play, stop, now-playing via yt-dlp |
-| 🎵 Spotify MCP Server | ✅ Complete | Ready — needs credentials in `.env` |
-| ⏰ Utility MCP Server | ✅ Complete | Timers, reminders, calculator, date/time |
-| 📁 Filesystem MCP Server | ✅ Complete | Local file search and read |
-| 🔍 Search MCP Server | ✅ Complete | DuckDuckGo web, weather, news |
-| 🗣️ Custom Wake Word — Hey VAKYA | ⏳ Week 6 | OpenWakeWord trainer |
-
-### What works right now
-
-- Say **"Alexa"** → VAKYA wakes up
-- Speak any question → transcribed via Whisper on your RTX 3050
-- Groq sends to Llama 3.1 8B and gets a response in under 1 second
-- Piper TTS speaks the response aloud in Ryan's voice
-- Say **"Play Bohemian Rhapsody"** → YouTube plays it via yt-dlp
-- Say **"What's the weather in Bangalore?"** → live DuckDuckGo search
-- Say **"Set a 10-minute timer"** → timer fires and speaks an alert
-- Say **"Remember that I am allergic to peanuts"** → persisted to ChromaDB
-- Say **"Goodbye VAKYA"** → clean shutdown
-- Say **"Reset conversation"** → clears Groq history
-
----
-
-## Project Structure
-
-```
-vakya/
-├── core/
-│   ├── listener.py         ← Week 1 ✅  Wake word + STT
-│   ├── speaker.py          ← Week 1 ✅  Piper TTS
-│   ├── brain.py            ← Week 2 ✅  Groq LLM
-│   └── memory.py           ← Week 3 ✅  ChromaDB + SQLite
-│
-├── mcp_servers/
-│   ├── youtube_server.py   ← Week 4 ✅  YouTube via yt-dlp
-│   ├── spotify_server.py   ← Week 4 ✅  Spotify (needs .env creds)
-│   ├── utility_server.py   ← Week 4 ✅  Timers, reminders, calculator
-│   ├── filesystem_server.py← Week 4 ✅  File search
-│   └── search_server.py    ← Week 5 ✅  DuckDuckGo, weather, news
-│
-├── piper/
-│   ├── piper.exe
-│   └── voices/
-│       ├── en_US-ryan-high.onnx
-│       └── en_US-ryan-high.onnx.json
-│
-├── data/
-│   ├── chroma_db/          ← semantic memory store (ChromaDB)
-│   └── vakya.db            ← SQLite structured memory
-│
-├── .env                    ← GROQ_API_KEY + Spotify creds (never share)
-├── config.yaml
-├── main.py                 ← Entry point ✅
-├── check_mic.py            ← Debugging tool
-└── requirements.txt
-```
-
----
-
-## Platform & Stack
-
-| Component | Technology |
-|-----------|-----------|
-| OS | Windows 11 |
-| GPU | NVIDIA RTX 3050 (8 GB VRAM) |
-| STT | Faster-Whisper Small (`float16` / CUDA) |
-| LLM | Groq Cloud → Llama 3.1 8B Instant |
-| TTS | Piper TTS — `en_US-ryan-high.onnx` |
-| Wake Word | OpenWakeWord — `alexa` model |
-| Memory (semantic) | ChromaDB (local vector DB) |
-| Memory (structured) | SQLite (`vakya.db`) |
-| Music | yt-dlp + YouTube (no API key needed) |
-| Search | DuckDuckGo free API |
-| Microphone | Realtek Array — `input_device_index=2` |
-
----
-
-## Module Documentation
-
-### `core/listener.py` — Ears
-
-Runs as a permanent background daemon thread. Three sequential phases:
-
-**Configuration constants**
-
-```python
-WAKE_WORD_MODEL     = 'alexa'       # placeholder until Week 6
-WAKE_WORD_THRESHOLD = 0.7           # 0–1, higher = less sensitive
-SILENCE_TIMEOUT     = 1.5           # seconds of silence = end of speech
-MAX_RECORD_SECONDS  = 15            # hard cap on recording
-WHISPER_MODEL_SIZE  = 'small'       # small=460 MB, medium=1.5 GB
-WHISPER_DEVICE      = 'cuda'        # RTX 3050
-WHISPER_COMPUTE     = 'float16'     # half precision — faster on GPU
-MIC_DEVICE_INDEX    = 2             # Realtek Array on your machine
-```
-
-**The three phases inside `_listen_loop()`**
-
-| Phase | What happens | Key code |
-|-------|-------------|----------|
-| 1 — Wake Word | Reads 80 ms audio chunks, passes to OWW. If confidence ≥ 0.7, moves to Phase 2 | `oww.predict(audio_int16)` |
-| 2 — Record | Records until 1.5 s of silence (RMS < 500). Hard cap 15 s | `_rms(chunk) < SILENCE_THRESHOLD` |
-| 3 — Transcribe | Converts to float32, passes to Whisper CUDA, puts result in queue | `whisper.transcribe(audio_float32)` |
-
-**RMS silence detector**
-
-```python
-def _rms(audio_chunk: bytes) -> float:
-    samples = np.frombuffer(audio_chunk, dtype=np.int16).astype(np.float32)
-    return float(np.sqrt(np.mean(samples ** 2)))
-```
-
-**Why a background thread?**
-The listener runs in a daemon thread so it never blocks `main.py`. While VAKYA is speaking, it is still monitoring for the next wake word. Results flow via a thread-safe `queue.Queue()`.
-
-```python
-# main.py — blocks until you finish speaking
-text = listener.get_transcription(timeout=60)
-
-# listener.py — background thread puts results here
-self._result_queue.put(text)
-```
-
----
-
-### `core/speaker.py` — Mouth
-
-**How Piper TTS works**
-
-Piper is called as a subprocess — Python launches `piper.exe`, pipes text via stdin, reads raw 16-bit PCM audio via stdout. Faster than loading Piper as a library (avoids the GIL).
-
-```python
-result = subprocess.run(
-    [PIPER_EXECUTABLE, '--model', VOICE_MODEL, '--output_raw'],
-    input=text.encode('utf-8'),
-    capture_output=True,
-    timeout=30
-)
-samples = np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32)
-audio   = samples / 32768.0   # normalise to [-1, 1]
-```
-
-**Non-blocking queue**
-
-```python
-speaker.speak('Let me think about that.')   # non-blocking — returns immediately
-speaker.speak('The answer is 42.')          # queued, plays after the above
-speaker.wait()                              # blocks until both phrases finish
-```
-
-**The 880 Hz chime** — 0.12 s sine wave, generated mathematically (no audio file):
-
-```python
-t     = np.linspace(0, 0.12, int(22050 * 0.12), endpoint=False)
-wave  = 0.3 * np.sin(2 * np.pi * 880 * t)
-fade  = np.linspace(1.0, 0.0, len(wave))
-chime = (wave * fade).astype(np.float32)
-```
-
-**Voice constants** (imported by `main.py`)
-
-```python
-BOOT_PHRASES = [
-    'V.A.K.Y.A online. Voice Activated Knowledge Yantric Agent, at your service.',
-    'All systems nominal. How can I help you?',
-]
-READY_PHRASE    = 'Listening.'
-THINKING_PHRASE = 'Let me think about that.'
-ERROR_PHRASE    = 'I encountered an error. Please try again.'
-```
-
----
-
-### `core/brain.py` — Intelligence
-
-**Why Groq instead of local Ollama**
-
-| | Original plan | Chosen approach |
-|---|---|---|
-| Model | Qwen2.5 14B (local) | Llama 3.1 8B Instant (Groq cloud) |
-| Problem | 14B needs ~9 GB VRAM; RTX 3050 has 8 GB | N/A |
-| Speed | Limited by VRAM | Faster than local even on good GPUs |
-| Privacy | Fully local | Queries go to Groq servers (no training) |
-
-**System prompt**
-
-```python
-SYSTEM_PROMPT = '''
-You are V.A.K.Y.A — Voice Activated Knowledge Yantric Agent.
-You are a personal AI assistant running on the user's local machine.
-You were built by Sai Sandeep.
-
-- Keep responses short and conversational (you are heard, not read)
-- Never use bullet points or markdown formatting
-- Speak in plain sentences only
-- Never say you are made by Meta or any other company
-'''
-```
-
-**Conversation history** — last 10 exchanges sent with every request:
-
-```python
-messages = [{'role': 'system', 'content': SYSTEM_PROMPT}] + self._history
-```
-
-**Groq API call**
-
-```python
-response = self._client.chat.completions.create(
-    model      = 'llama-3.1-8b-instant',
-    messages   = messages,
-    max_tokens = 300,       # ~3–4 sentences — short for voice
-    temperature= 0.7,
-)
-```
-
-**API key security** — key is never hardcoded, loaded from `.env`:
-
-```ini
-# .env (never commit to GitHub)
-GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxx
-```
-
----
-
-### `core/memory.py` — Memory (Week 3 ✅)
-
-Two-tier architecture:
-
-**Tier 1 — ChromaDB (semantic / fuzzy recall)**
-- Personal facts: name, allergies, preferences
-- Past conversation summaries
-- Music preferences
-
-**Tier 2 — SQLite (structured / exact recall)**
-- Reminders with exact timestamps
-- Timers
-- Key-value user facts (fast lookup)
-
-```python
-memory = Memory()
-
-# Store a personal fact
-memory.remember("I am allergic to peanuts", category="fact")
-memory.remember("My favourite artist is AR Rahman", category="preference")
-
-# Fuzzy recall relevant to a query
-facts = memory.recall("what food should I avoid")
-# → ["User is allergic to peanuts"]
-
-# Reminders
-memory.add_reminder("Call Mum", "2026-05-14 15:00")
-due = memory.get_due_reminders()   # returns reminders due now
-
-# Context injection — called before every Groq request
-context = memory.build_context(text)
-
-# Memory stats
-stats = memory.stats()
-# → {'semantic_facts': 5, 'semantic_conversations': 12, 'pending_reminders': 2}
-```
-
-**Voice commands for memory:**
-
-| Say | What VAKYA does |
-|-----|----------------|
-| "Remember that I am allergic to peanuts" | Stores to ChromaDB |
-| "List reminders" | Reads all pending reminders aloud |
-| "Memory stats" / "What do you remember?" | Speaks storage counts |
-
----
-
-### `mcp_servers/youtube_server.py` — Music (Week 4 ✅)
-
-YouTube music playback via yt-dlp — no API key required.
-
-```python
-youtube_play("Bohemian Rhapsody")
-youtube_stop()
-youtube_now_playing()
-```
-
-**Voice trigger** — bypasses brain entirely for speed:
-
-```python
-if any(p in text_lower for p in ["play ", "put on ", "play me "]):
-    song   = _extract_song_name(text_lower)
-    result = youtube_play(song)
-```
-
----
-
-### `mcp_servers/utility_server.py` — Utilities (Week 4 ✅)
-
-| Tool | Description |
-|------|-------------|
-| `get_current_time()` | Returns current date and time |
-| `set_timer(seconds, label)` | Fires a spoken alert after N seconds |
-| `add_reminder(label, due_at)` | Adds to SQLite reminders |
-| `calculate(expression)` | Safe maths evaluator |
-
----
-
-### `mcp_servers/search_server.py` — Web Search (Week 5 ✅)
-
-DuckDuckGo free API — no key required.
-
-| Tool | Trigger phrases |
-|------|----------------|
-| `web_search(query)` | "Search for...", "Look up...", "Google..." |
-| `search_weather(location)` | "Weather in...", "Temperature...", "Is it raining..." |
-| `search_news(topic)` | "Latest news about...", "What's happening with..." |
-
-Sports queries (`match`, `score`, `IPL`, `cricket`) auto-route to `search_news`.
-
----
-
-### `mcp_servers/filesystem_server.py` — Files (Week 4 ✅)
-
-Search and read files on your local drive. Useful for "find my resume" style queries.
-
----
-
-### `main.py` — Glue
-
-**Boot sequence** (Speaker loads first — can speak errors before crashing):
-
-```python
-speaker  = Speaker()    # loads Piper, starts playback thread
-memory   = Memory()     # opens ChromaDB + SQLite
-brain    = Brain()      # loads .env, connects to Groq
-listener = Listener()   # loads OWW + Whisper, starts mic thread
-
-speaker.speak_blocking(BOOT_PHRASES[0])
-speaker.speak_blocking(BOOT_PHRASES[1])
-listener.start()
-```
-
-**Main loop — step by step:**
-
-| Step | Code | What it does |
-|------|------|-------------|
-| 1 — Wait | `listener.get_transcription(timeout=60)` | Blocks until wake word + command |
-| 2 — System check | `if 'goodbye vakya' in text_lower` | Shutdown / reset before LLM |
-| 3 — Memory commands | `if text_lower.startswith("remember that")` | Direct memory ops |
-| 4 — Direct triggers | `if "play " in text_lower` | Music, weather, news — bypasses brain |
-| 5 — Brain | `brain.think(text, memory_context=...)` | Groq call with memory injection |
-| 6 — Tool execution | `_try_execute_tool(response)` | 3-strategy JSON parser |
-| 7 — Speak | `speaker.speak(result)` | Piper TTS output |
-| 8 — Save | `memory.remember_conversation(text, response)` | Persist to ChromaDB |
-
-**Built-in voice commands:**
-
-| Say | Action |
-|-----|--------|
-| "Goodbye VAKYA" / "Shut down" / "Turn off" | Clean exit |
-| "Reset conversation" / "Clear history" / "Forget everything" | Clear Groq history |
-| "Remember that..." / "VAKYA remember..." | Store fact to memory |
-| "List reminders" / "What are my reminders?" | Read reminders aloud |
-| "Memory stats" / "What do you remember?" | Memory statistics |
-| "What time is it?" / "What's the date?" | Direct time lookup (no LLM) |
-| "Play [song]" / "Put on [song]" | YouTube music |
-| "Stop music" / "Pause music" | Stop playback |
-| "What's playing?" / "Now playing?" | Currently playing track |
-| "Weather in [city]" / "Temperature in [city]" | Live weather search |
-| "Latest news about [topic]" | Live news search |
-| "Search for [query]" / "Google [query]" | DuckDuckGo web search |
-
-**Thinking-phrase logic:**
-
-```python
-if len(text.split()) > 6:
-    speaker.speak(THINKING_PHRASE)   # non-blocking
-
-response = brain.think(text)         # Groq call
-
-speaker.wait()                       # wait for "thinking" to finish
-speaker.speak(response)
-```
-
-**Robust tool-call parser** — 3 strategies to extract JSON from LLM output:
-
-1. Entire response is valid JSON
-2. JSON block embedded somewhere in the response
-3. Regex fallback for malformed JSON
-
----
-
-## Data Flow
-
-```
-  YOUR VOICE
-      │
-      ▼
-  ┌─────────────────────────────────────────┐
-  │  listener.py                            │
-  │                                         │
-  │  PyAudio mic  →  OpenWakeWord           │
-  │                      │                  │
-  │               Wake word detected        │
-  │                      │                  │
-  │               Record utterance          │
-  │                      │                  │
-  │               Faster-Whisper (CUDA)     │
-  │                      │                  │
-  │               "What is your name?"      │
-  └──────────────────────┼──────────────────┘
-                         │ queue.put(text)
-                         ▼
-  ┌─────────────────────────────────────────┐
-  │  main.py — Direct triggers?             │
-  │                                         │
-  │  play/stop/weather/news/search/time ───►│  MCP servers
-  │                                         │       │
-  │  Everything else ──────────────────────►│       │
-  └──────────────────────┼──────────────────┘       │
-                         │                          │
-                         ▼                          │
-  ┌─────────────────────────────────────────┐       │
-  │  memory.py — build_context()            │       │
-  │                                         │       │
-  │  ChromaDB fuzzy recall                  │       │
-  │  → injects relevant facts into prompt   │       │
-  └──────────────────────┼──────────────────┘       │
-                         │                          │
-                         ▼                          │
-  ┌─────────────────────────────────────────┐       │
-  │  brain.py                               │       │
-  │                                         │       │
-  │  System prompt + memory + history       │       │
-  │  + tool descriptions + your text        │       │
-  │                  │                      │       │
-  │          Groq API (Llama 3.1 8B)        │       │
-  │                  │                      │       │
-  │  Reply or {"tool": ..., "params": ...}  │       │
-  └──────────────────┼──────────────────────┘       │
-                     │ tool call? ──────────────────►┘
-                     │ plain reply?
-                     ▼
-  ┌─────────────────────────────────────────┐
-  │  memory.py — remember_conversation()    │
-  │  ChromaDB conversation store            │
-  └──────────────────┼──────────────────────┘
-                     │
-                     ▼
-  ┌─────────────────────────────────────────┐
-  │  speaker.py                             │
-  │                                         │
-  │  queue.put(reply)                       │
-  │        │                                │
-  │  piper.exe  →  raw PCM audio            │
-  │        │                                │
-  │  sounddevice.play()                     │
-  └─────────────────────────────────────────┘
-         │
-         ▼
-  YOUR SPEAKERS
-```
-
----
+**Voice Activated Knowledge Yantric Agent** — a Windows voice assistant built with OpenWakeWord, Faster-Whisper, Groq, Piper TTS, and local memory.
+
+## Features
+
+- Wake-word detection with OpenWakeWord (`alexa`)
+- Speech-to-text using Faster-Whisper (`small`, CUDA/`float16` by default)
+- Groq-powered conversation using `allam-2-7b`
+- Offline speech output through Piper and the `en_US-ryan-high` voice
+- Persistent semantic memory (ChromaDB) and reminders/facts (SQLite)
+- YouTube playback through `yt-dlp` and VLC
+- Optional Spotify control
+- Web search, weather, news, timers, reminders, calculations, unit conversion, and safe local-file tools
+
+## Requirements
+
+- Windows
+- Python 3.10 or later
+- An NVIDIA GPU with CUDA support for the default speech-to-text settings, or update `core/listener.py` to use `cpu` and `int8`
+- A [Groq API key](https://console.groq.com/keys)
+- Piper for Windows and the `en_US-ryan-high.onnx` voice model
+- VLC, if you want YouTube playback
 
 ## Setup
 
-### 1. Install dependencies
+1. Create and activate a virtual environment:
 
-```bash
-pip install -r requirements.txt
+   ```powershell
+   py -m venv venv
+   .\venv\Scripts\Activate.ps1
+   ```
+
+2. Install Python dependencies:
+
+   ```powershell
+   pip install -r requirements.txt
+   ```
+
+3. Create a `.env` file in the project root:
+
+   ```ini
+   GROQ_API_KEY=gsk_your_key_here
+
+   # Optional: required only for Spotify controls
+   SPOTIFY_CLIENT_ID=your_client_id
+   SPOTIFY_CLIENT_SECRET=your_client_secret
+   SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
+   ```
+
+4. Install the non-Python audio tools:
+
+   - Install [Piper](https://github.com/rhasspy/piper/releases) and place its executable where `PIPER_EXECUTABLE` in `core/speaker.py` points.
+   - Download the `en_US-ryan-high.onnx` voice and place it in `piper/voices/`, alongside its `.onnx.json` configuration file.
+   - Install [VLC](https://www.videolan.org/vlc/) at the default Windows location for YouTube playback.
+   - Ensure `yt-dlp` is available on your `PATH` (the package is included in `requirements.txt`).
+
+5. Check the machine-specific settings in the source files before running:
+
+   - `core/listener.py`: `MIC_DEVICE_INDEX`, Whisper device, and compute type.
+   - `core/speaker.py`: `PIPER_EXECUTABLE` and `VOICE_MODEL`.
+   - `mcp_servers/youtube_server.py`: `VLC_PATH` if VLC is installed elsewhere.
+
+6. Start VAKYA:
+
+   ```powershell
+   python main.py
+   ```
+
+Say **“Alexa”**, then speak your request. Press `Ctrl+C` to stop it.
+
+## Example commands
+
+| Say | Result |
+| --- | --- |
+| “What time is it?” | Speaks the current date and time. |
+| “Play Bohemian Rhapsody” | Searches YouTube and plays the result through VLC. |
+| “Stop music” | Stops the current YouTube playback. |
+| “What’s the weather in Colombo?” | Retrieves current weather. |
+| “Latest news about space” | Searches recent news. |
+| “Search for Python virtual environments” | Performs a web search. |
+| “Remember that I am allergic to peanuts” | Stores a semantic memory. |
+| “List reminders” | Reads pending reminders. |
+| “What do you remember?” | Reports memory statistics. |
+| “Reset conversation” | Clears only the in-memory LLM conversation history. |
+| “Goodbye VAKYA” | Shuts down cleanly. |
+
+## Project layout
+
+```text
+vakya/
+├── main.py                     # Application entry point and voice-command routing
+├── core/
+│   ├── listener.py              # Wake word, microphone capture, and transcription
+│   ├── speaker.py               # Piper synthesis and audio playback
+│   ├── brain.py                 # Groq client and conversation history
+│   └── memory.py                # ChromaDB and SQLite persistence
+├── mcp_servers/
+│   ├── youtube_server.py        # YouTube search and VLC playback
+│   ├── spotify_server.py        # Spotify Web API controls
+│   ├── utility_server.py        # Timers, reminders, calculations, conversions
+│   ├── filesystem_server.py     # Restricted file search, read, and listing
+│   └── search_server.py         # Web, weather, and news search
+├── piper/voices/                # Piper voice model assets
+├── data/                        # Created at runtime; local memory databases
+├── requirements.txt
+└── .env                         # Local secrets; do not commit
 ```
 
-### 2. Download OpenWakeWord models
+## Notes
 
-```bash
-python -c "import openwakeword; openwakeword.utils.download_models()"
-```
+- The active runtime settings are defined directly in the Python modules. `config.yaml` is currently not read by the application and does not control the running configuration.
+- The file tools are restricted to Desktop, Documents, Downloads, OneDrive, Music, and Pictures.
+- `Reset conversation` does not erase ChromaDB or SQLite data. Remove the relevant files under `data/` only if you intentionally want to erase persisted memory.
+- `.env`, Spotify tokens, Piper model binaries, and local memory data are ignored by Git.
 
-### 3. Download Piper voice model
+## Troubleshooting
 
-Place in `piper/voices/`:
-- `en_US-ryan-high.onnx`
-- `en_US-ryan-high.onnx.json`
-
-Download from: https://huggingface.co/rhasspy/piper-voices
-
-### 4. Create `.env` file
-
-```ini
-GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxx
-
-# Optional — for Spotify
-SPOTIFY_CLIENT_ID=your_id
-SPOTIFY_CLIENT_SECRET=your_secret
-SPOTIFY_REDIRECT_URI=http://localhost:8888/callback
-```
-
-Get a free Groq key at: https://console.groq.com
-
-### 5. Run
-
-```bash
-python main.py
-```
-
----
-
-## Troubleshooting Log
-
-| Error | Cause | Fix |
-|-------|-------|-----|
-| `alexa_v0.1.onnx not found` | OWW models not auto-downloaded | `python -c 'import openwakeword; openwakeword.utils.download_models()'` |
-| `Piper not found at C:\vakya\...` | Wrong hardcoded path | Updated to OneDrive Desktop path |
-| `Piper error (empty audio)` | Voice model name mismatch (en_GB vs en_US) | Set `VOICE_MODEL` to `en_US-ryan-high.onnx` |
-| `RMS always 0 / no wake word` | PyAudio reading from Steam virtual mic | Added `input_device_index=2` (Realtek Array) |
-| `PowerShell quote errors` | PS breaks inline Python `-c` commands | Saved debug scripts as `.py` files |
-| `torch.cuda = None` | CPU-only PyTorch installed | `pip install torch --index-url https://download.pytorch.org/whl/cu121` |
-| `Whisper loading slow` | Downloading medium model (1.5 GB) | Switched to small model (460 MB) |
-
----
-
-## Week 6 — Coming Next
-
-**Custom Wake Word — Hey VAKYA**
-
-The `alexa` placeholder will be replaced with a trained `hey_vakya` model using OpenWakeWord's trainer.
-
-- Record ~20 voice samples saying "Hey VAKYA"
-- Train for ~30 minutes
-- VAKYA responds only to your voice and its actual name
-
----
-
-*VAKYA has ears, a mouth, a brain, memory, and tools. Week 6 gives it its own name.*
+- **No microphone input:** change `MIC_DEVICE_INDEX` in `core/listener.py` to your input device’s index.
+- **CUDA error:** set `WHISPER_DEVICE = "cpu"` and `WHISPER_COMPUTE = "int8"` in `core/listener.py`.
+- **Piper not found:** correct `PIPER_EXECUTABLE` in `core/speaker.py`.
+- **YouTube playback fails:** confirm that VLC is installed and `yt-dlp` is on `PATH`.
+- **Groq key error:** verify that `.env` contains a valid `GROQ_API_KEY`.
