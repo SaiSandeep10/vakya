@@ -1,0 +1,29 @@
+# V.A.K.Y.A — Voice Activated Knowledge Yantric Agent
+# requirements.txt
+
+
+#Ears & Mouth ────────────────────────────────
+faster-whisper          # Whisper STT with CUDA support
+pyaudio                 # Microphone input (raw audio stream)
+openWakeWord            # Wake word detection
+sounddevice             # Audio playback for Piper output
+numpy                   # Audio array processing
+
+#Brain ───────────────────────────────────────
+groq                    # Groq API client (free, ultra-fast inference)
+ollama                  # Python client for local Ollama server
+langchain               # Orchestration framework
+langchain-ollama        # LangChain <-> Ollama adapter
+langchain-mcp-adapters  # MCP tool server bridge
+
+#Memory ──────────────────────────────────────
+chromadb                # Local vector database (semantic memory)
+sqlite-utils            # SQLite helper (structured memory)
+
+#MCP Tools ───────────────────────────────────
+spotipy                 # Spotify Web API client
+yt-dlp                   # YouTube video/audio downloader
+#Utilities ───────────────────────────────────────────
+pyyaml                  # config.yaml loading
+python-dotenv           # .env file support for secrets
+loguru                  # Better logging than print()

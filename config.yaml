@@ -1,0 +1,25 @@
+llm:
+  model: "qwen2.5:14b"
+  base_url: "http://localhost:11434"
+
+stt:
+  model_size: "medium"
+  device: "cuda"
+  compute_type: "float16"
+
+wake_word:
+  model: "hey_jarvis"
+  threshold: 0.7
+
+tts:
+  voice: "en_GB-ryan-high"
+  speed: 1.0
+
+spotify:
+  client_id: "YOUR_ID"
+  client_secret: "YOUR_SECRET"
+  redirect_uri: "http://localhost:8888/callback"
+
+memory:
+  chroma_path: "./data/chroma_db"
+  sqlite_path: "./data/jarvis.db"

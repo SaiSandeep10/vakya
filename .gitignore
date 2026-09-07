@@ -1,0 +1,45 @@
+# ── Secrets ───────────────────────────────────────────
+.env
+.spotify_token_cache
+
+# ── Python ────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual Environment ───────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ── Piper binary & large voice model ─────────────────
+# Keep the voices/ folder structure but not the large .onnx file
+piper/piper/
+piper/voices/*.onnx
+
+# ── Data / Memory stores ──────────────────────────────
+# Exclude personal memory data (ChromaDB + SQLite)
+data/chroma_db/
+data/vakya.db
+data/voices/
+
+# ── IDE / OS ──────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ── Logs ──────────────────────────────────────────────
+*.log
+logs/
